@@ -1,0 +1,73 @@
+---
+
+- name: Terraform provision playbook
+  hosts: localhost
+  gather_facts: no
+  vars:
+    priv_key: /root/.ssh/id_rsa
+    repos_path: /git-repos
+    env_repo:
+      provider: github.com
+      user: rodrigobrim
+      repo: terraform-environments
+  tasks:
+
+    - name: Create repositories directory
+      file:
+        path: "{{ repos_path }}"
+        state: directory
+
+    - name: Clone environemnt repo
+      include_role:
+        name: git_clone
+      vars:
+        git_clone_key: "{{ priv_key }}"
+        git_clone_repos_path: "{{ repos_path }}"
+        git_clone_repo:
+          provider: "{{ env_repo.provider }}"
+          user: "{{ env_repo.user }}"
+          repo: "{{ env_repo.repo }}"
+
+    - name: Load {{ repos_path }}/{{ env_repo.repo }}/{{ app }}/defaults.yml
+      include_vars:
+        file: "{{ repos_path }}/{{ env_repo.repo }}/{{ app }}/defaults.yml"
+
+    - name: Clone {{ app }} repositories
+      include_role:
+        name: git_clone
+      vars:
+        git_clone_key: "{{ priv_key }}"
+        git_clone_repos_path: "{{ repos_path }}"
+        git_clone_repo:
+          provider: "{{ tfrepo.provider }}"
+          user: "{{ tfrepo.user }}"
+          repo: "{{ tfrepo.repo }}"
+      loop: "{{ repositories }}"
+      loop_control:
+        loop_var: tfrepo
+
+    - name: Apply ansible -> terraform templates
+      template:
+        src: "/{{ repos_path }}/{{ tfrepo.repo }}/main.tf.j2"
+        dest: "/{{ repos_path }}/{{ tfrepo.repo }}/main.tf"
+        remote_src: yes
+      loop: "{{ repositories }}"
+      loop_control:
+        loop_var: tfrepo
+        label: "{{ tfrepo.name }}"
+
+    - name: Plan and apply
+      include_role:
+        name: terraform
+      vars:
+         terraform:
+           bucket: "{{ tfvar.bucket }}"
+           credentials: "{{ tfvar.credentials }}"
+           repo_path: "{{ repos_path }}/{{ tfrepo.repo }}"
+           state: "{{ tfrepo.state }}"
+           app: "{{ app }}"
+           env: "{{ env }}"
+           product: "{{ tfrepo.name }}"
+      loop: "{{ repositories }}"
+      loop_control:
+        loop_var: tfrepo
