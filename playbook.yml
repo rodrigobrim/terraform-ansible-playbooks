@@ -7,9 +7,9 @@
     priv_key: /root/.ssh/id_rsa
     repos_path: /git-repos
     env_repo:
-      provider: github.com
+      scm_provider: github.com
       user: rodrigobrim
-      repo: terraform-environments
+      repo: terraform-projects-inventories
   tasks:
 
     - name: Create repositories directory
@@ -17,57 +17,127 @@
         path: "{{ repos_path }}"
         state: directory
 
-    - name: Clone environemnt repo
+    - name: Clone projects inventories repo
       include_role:
         name: git_clone
       vars:
         git_clone_key: "{{ priv_key }}"
         git_clone_repos_path: "{{ repos_path }}"
         git_clone_repo:
-          provider: "{{ env_repo.provider }}"
+          scm_provider: "{{ env_repo.scm_provider }}"
           user: "{{ env_repo.user }}"
           repo: "{{ env_repo.repo }}"
 
-    - name: Load {{ repos_path }}/{{ env_repo.repo }}/{{ app }}/defaults.yml
+    - name: Load {{ repos_path }}/{{ env_repo.repo }}/{{ project }}/{{ env }}/defaults.yml
       include_vars:
-        file: "{{ repos_path }}/{{ env_repo.repo }}/{{ app }}/defaults.yml"
+        file: "{{ repos_path }}/{{ env_repo.repo }}/{{ project }}/{{ env }}/defaults.yml"
 
-    - name: Clone {{ app }} repositories
+    - name: Clone {{ env }} environment repositories
       include_role:
         name: git_clone
       vars:
         git_clone_key: "{{ priv_key }}"
         git_clone_repos_path: "{{ repos_path }}"
         git_clone_repo:
-          provider: "{{ tfrepo.provider }}"
-          user: "{{ tfrepo.user }}"
-          repo: "{{ tfrepo.repo }}"
-      loop: "{{ repositories }}"
+          scm_provider: "{{ resource.value.scm_provider }}"
+          user: "{{ resource.value.user }}"
+          repo: "{{ resource.value.repo }}"
+      loop: "{{ inventory.resources | dict2items }}"
       loop_control:
-        loop_var: tfrepo
+        loop_var: resource
 
-    - name: Apply ansible -> terraform templates
+    - name: Apply {{ env }} ansible -> terraform templates
       template:
-        src: "/{{ repos_path }}/{{ tfrepo.repo }}/main.tf.j2"
-        dest: "/{{ repos_path }}/{{ tfrepo.repo }}/main.tf"
+        src: "/{{ repos_path }}/{{ resource.value.repo }}/main.tf.j2"
+        dest: "/{{ repos_path }}/{{ resource.value.repo }}/main.tf"
         remote_src: yes
-      loop: "{{ repositories }}"
-      loop_control:
-        loop_var: tfrepo
-        label: "{{ tfrepo.name }}"
-
-    - name: Plan and apply
-      include_role:
-        name: terraform
       vars:
-         terraform:
-           bucket: "{{ tfvar.bucket }}"
-           credentials: "{{ tfvar.credentials }}"
-           repo_path: "{{ repos_path }}/{{ tfrepo.repo }}"
-           state: "{{ tfrepo.state }}"
-           app: "{{ app }}"
-           env: "{{ env }}"
-           product: "{{ tfrepo.name }}"
-      loop: "{{ repositories }}"
+         tfvars:
+           project: "{{ inventory.backend.project }}"
+           project_id: "{{ inventory.backend.project_id }}"
+           region: "{{ inventory.backend.region }}"
+           credentials: "{{ inventory.backend.credentials }}"
+           subnets: "{{ resource.value.subnets }}"
+      loop: "{{ inventory.resources | dict2items }}"
       loop_control:
-        loop_var: tfrepo
+        loop_var: resource
+        label: "{{ resource.key }}"
+
+    - name: Plan and apply {{ env }} shared resources
+      community.general.terraform:
+        project_path: "{{ repos_path }}/{{ resource.value.repo }}"
+        state: "{{ resource.value.state }}"
+        force_init: yes
+        init_reconfigure: yes
+        backend_config:
+          bucket: "{{ inventory.backend.bucket }}"
+          credentials: "{{ inventory.backend.credentials }}"
+          prefix: "{{ inventory.backend.project }}/{{ env }}/{{ resource.key }}"
+      loop: "{{ inventory.resources | dict2items }}"
+      loop_control:
+        loop_var: resource
+
+    - name: Applying {{ app }} terraform plans
+      community.general.terraform:
+      loop: "{{ vars[app].resources | dict2items }}"
+      loop_control:
+        loop_var: resource
+        label: "{{ resource.key }}"
+      register: tf_apply
+
+    - name: Load {{ repos_path }}/{{ env_repo.repo }}/{{ project }}/{{ env }}/{{ app }}/defaults.yml
+      include_vars:
+        file: "{{ repos_path }}/{{ env_repo.repo }}/{{ project }}/{{ env }}/{{ app }}/defaults.yml"
+
+    - name: Apply {{ app }} ansible -> terraform templates
+      template:
+        src: "/{{ repos_path }}/{{ resource.value.repo }}/main.tf.j2"
+        dest: "/{{ repos_path }}/{{ resource.value.repo }}/main.tf"
+        remote_src: yes
+      vars:
+         tfvars:
+           app: "{{ app }}"
+           project: "{{ inventory.backend.project }}"
+           project_id: "{{ inventory.backend.project_id }}"
+           region: "{{ resource.value.location }}"
+           credentials: "{{ inventory.backend.credentials }}"
+           initial_node_count: "{{ resource.value.initial_node_count }}"
+           node_count: "{{ resource.value.node_count }}"
+           username: "{{ resource.value.username }}"
+           password: "{{ resource.value.password }}"
+           machine_type: "{{ resource.value.machine_type }}"
+           autoscaling: "{{ resource.value.autoscaling }}"
+      loop: "{{ vars[app].resources | dict2items }}"
+      loop_control:
+        loop_var: resource
+        label: "{{ resource.key }}"
+
+    - name: Applying {{ app }} terraform plans
+      community.general.terraform:
+        project_path: "{{ repos_path }}/{{ resource.value.repo }}"
+        state: "{{ resource.value.state }}"
+        force_init: yes
+        init_reconfigure: yes
+        backend_config:
+          bucket: "{{ inventory.backend.bucket }}"
+          credentials: "{{ inventory.backend.credentials }}"
+          prefix: "{{ inventory.backend.project }}/{{ env }}/{{ app }}/{{ resource.key }}"
+      loop: "{{ vars[app].resources | dict2items }}"
+      loop_control:
+        loop_var: resource
+        label: "{{ resource.key }}"
+      register: tf_apply
+
+    - name: Generate .kube/config
+      shell:
+        cmd: /opt/google-cloud-sdk/bin/gcloud container clusters get-credentials {{ app }}-{{ resource.key }} --zone={{ resource.value.location }} --project={{ inventory.backend.project_id }}
+      loop: "{{ vars[app].resources | dict2items }}"
+      loop_control:
+        loop_var: resource
+        label: "{{ resource.key }}"
+      when: resource.key == 'gke'
+      register: get_kubeconfig
+
+    - name: Deploy GKE applications
+      shell:
+        cmd: kubectl create deployment todo-backend --image=docker.io/rodrigobrim/todo-backend:0.0.1

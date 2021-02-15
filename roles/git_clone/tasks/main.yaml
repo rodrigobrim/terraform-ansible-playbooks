@@ -2,7 +2,7 @@
 
 - name: Clone repositories
   ansible.builtin.git:
-    repo: git@{{ git_clone_repo.provider }}:{{ git_clone_repo.user }}/{{ git_clone_repo.repo }}.git
+    repo: git@{{ git_clone_repo.scm_provider }}:{{ git_clone_repo.user }}/{{ git_clone_repo.repo }}.git
     dest: "{{ git_clone_repos_path }}/{{ git_clone_repo.repo }}"
     version: "{{ git_clone_repo.version | default(omit) }}"
     key_file: "{{ git_clone_key }}"
